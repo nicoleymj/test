@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <script>
+        const STATUS = {
+            PENDING: "pending",
+            FULFILLED: "fulfilled",
+            REJECTED: "rejected"
+        }
+
+        function promiseResolutionProcedure(promise2, x, resolve, reject) {
+            // 兼容处理then中的promise循环引用的问题
+            if (x === promise2) {
+                throw new Error('循环引用promise了')
+            }
+            // 兼容处理then中返回一个promise对象的情况
+            if (x instanceof MyPromise) {
+                if (x.status === STATUS.PENDING) {
+                    x.then(y => promiseResolutionProcedure(promise2, y, resolve, reject), reject)
+                } else {
+                    x.status === STATUS.FULFILLED && resolve(x.value)
+                    x.status === STATUS.REJECTED && reject(x.value)
+                }
+            }
+
+            // 兼容处理then中返回thenable对象的情况（then中返回一个有then方法的对象）
+            if ((typeof x === 'object' || typeof x === 'function')  && x !== null) {
+                if (typeof x.then === 'function') {
+                    x.then(y => promiseResolutionProcedure(promise2, y, resolve, reject), reject)
+                } else {
+                    resolve(x)
+                }
+            } else {
+                resolve(x)
+            }
+        }
+
+        class MyPromise{
+            constructor(executor) {
+                this.value = undefined
+                this.status = STATUS.PENDING
+                this.resolvedCallbacks = []
+                this.rejectedCallbacks = []
+
+                const resolve = (val) => {
+                    // 处理resolve的是一个promise对象的情况
+                    if((typeof val ==='object' || typeof val ==='function') && val.then) {
+                        promiseResolutionProcedure(this, val, resolve, reject)
+                        return
+                    }
+
+                    if (this.status === STATUS.PENDING) {
+                        setTimeout(() =>{
+                            this.value = val
+                            this.status = STATUS.FULFILLED
+                            this.resolvedCallbacks.map(fn => fn())
+                        })
+                    }
+                }
+
+                const reject = (val) => {
+                    if((typeof val ==='object' || typeof val ==='function') && val.then) {
+                        promiseResolutionProcedure(this, val, resolve, reject)
+                        return
+                    }
+                    if (this.status === STATUS.PENDING) {
+                        setTimeout(() =>{
+                            this.value = val
+                            this.status = STATUS.REJECTED
+                            this.rejectedCallbacks.map(fn => fn())
+                        })
+                    }
+                }
+
+                try {
+                    executor(resolve, reject)
+                } catch{
+
+                }
+            }
+
+            // 支持空then，所以需要给onFulfilled一个默认值
+            then (onFulfilled = val => val, onRejected = err => { throw new Error(err)}) {
+                let promise2 = null
+                // 处理已经完成的promise
+                if (this.status === STATUS.FULFILLED) {
+                    promise2 = new MyPromise((resolve, reject) => {
+                        const x = onFulfilled(this.value)
+                        promiseResolutionProcedure(promise2, x, resolve, reject)
+                    })
+                }
+                if (this.status === STATUS.REJECTED) {
+                    promise2 = new MyPromise((resolve, reject) => {
+                        const x = onRejected(this.value)
+                        promiseResolutionProcedure(promise2, x, resolve, reject)
+                    })
+                }
+
+                // 处理尚未完成的promise
+                if (this.status === STATUS.PENDING) {
+                        // 可以链式调用，说明得到的是一个promise对象
+                    promise2 = new MyPromise((resolve, reject) => {
+                        this.resolvedCallbacks.push(() => {
+                            const x = onFulfilled(this.value)
+                            // 兼容处理x是thenable对象的情况（如果then里面返回的是一个有then方法的对象）
+                            // resolve(x) // 将onFulfilled执行得到的结果再resolve回去
+                            promiseResolutionProcedure(promise2, x, resolve, reject)
+                        })
+                        this.rejectedCallbacks.push(() => {
+                            const x = onRejected(this.value)
+                            // 兼容处理x是thenable对象的情况（如果then里面返回的是一个有then方法的对象）
+                            promiseResolutionProcedure(promise2, x, resolve, reject)
+                        })
+                    })
+                }
+                return promise2
+            }
+
+            static all(promiseArray) {
+                return new MyPromise((resolve, reject) => {
+                    const resultArray = []
+                    let successTimes =0;
+                    for(let i = 0; i< promiseArray.length; i++) {
+                        promiseArray[i].then(data => {
+                            resultArray[i] = data
+                            successTimes ++
+                            if (successTimes === promiseArray.length) {
+                                resolve(resultArray)
+                            }
+                        }, err => reject(err))
+                    }
+                })
+            }
+        }
+    </script>
+    <script>
+        // 
+        // 3、防止resolve reject多次 4、then链式调用 5、空的then 6、thenable 7、then传递promise对象 8、resolve-promise
+        // const promise2 = new MyPromise((resolve, reject) => {
+        //     // resolve(1)
+        //     // reject(2)
+        //     resolve(2)
+        //     // resolve(new MyPromise((resolve) => {resolve(2.1)}))
+        // }).then(data => {
+        //     console.log(data)
+        //     return {
+        //         then(r) {
+        //            r(3)
+        //         }
+        //     }
+        // }, err => {
+        //     console.log(err)
+        //     throw new Error(err)
+        // }).then()
+        // .then(data=> {
+        //     console.log(data)
+        // })
+        
+        // 9、循环引用promise
+        const promise2 = new MyPromise((resolve, reject) => {
+            resolve(2)
+        })
+
+        new MyPromise((resolve, reject) => {
+            resolve(3)
+        }).then(data => {
+            console.log(data)
+            return promise2
+        }).then(data => {
+            console.log(data)
+        })
+
+        // 10、all
+        // MyPromise.all([
+        //     new MyPromise((resolve) => {
+        //         resolve(1)
+        //     }),
+        //     new MyPromise((resolve) => {
+        //         resolve(2)
+        //     })
+        // ]).then(dataList => {
+        //     console.log(dataList)
+        // })
+
+        // 12 支持处理完成或失败状态的then
+        // promise2.then(data => {
+        //     console.log(data)
+        // })
+
+        // promise2.then(data => {
+        //     console.log(data)
+        // })
+
+        // setTimeout(() => {
+        //     promise2.then(data => {
+        //         console.log(data)
+        //     })
+
+        //     promise2.then(data => {
+        //         console.log(data)
+        //     })
+        // })
+
+
+    </script>
+</body>
+</html>
